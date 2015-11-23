@@ -12,7 +12,7 @@
 #include <iostream>
 
 using namespace std;
-/* Р“РµРЅРµСЂР°С‚РѕСЂ СЃР»СѓС‡Р°Р№РЅС‹С… С‡РёСЃРµР» */
+/* Генератор случайных чисел */
 #define BITS_PER_CALL_GENERATOR 16
 random_device rand_device;   // non-deterministic generator
 mt19937 generator(rand_device());
@@ -27,14 +27,14 @@ uniform_int_distribution<> uniform_distribution(0, (1 << BITS_PER_CALL_GENERATOR
 struct node {
 	char type; // 0 - INPUT, 1 - WIRE, 2 - OUTPUT
 	char name[128];
-	struct element *fanin; // РЈ СѓР·Р»Р° С‚РѕР»СЊРєРѕ РѕРґРёРЅ РІС…РѕРґ
+	struct element *fanin; // У узла только один вход
 	int oNum;
-	struct element **fanout; // РЈ СѓР·Р»Р° РјРѕР¶РµС‚ Р±С‹С‚СЊ РјРЅРѕРіРѕ РІС‹С…РѕРґРѕРІ
+	struct element **fanout; // У узла может быть много выходов
 
-	// РџРµСЂРµРјРµРЅРЅС‹Рµ РґР»СЏ РїР°СЂР°Р»Р»РµР»СЊРЅС‹С… СЂР°СЃСЃС‡РµС‚РѕРІ (РјР°СЃСЃРёРІС‹ СЂР°Р·РјРµСЂРѕРј numthreads)
-	char *proc; // РћР±СЂР°Р±РѕС‚Р°РЅ РёР»Рё РЅРµ РѕР±СЂР°Р±РѕС‚Р°РЅ СѓР·РµР» (0 - РЅРµРѕР±СЂР°Р±РѕС‚Р°РЅ, 1 - РѕР±СЂР°Р±РѕС‚Р°РЅ)
-	INT_REL *valWithoutErr; // Р›РѕРіРёС‡РµСЃРєРѕРµ Р·РЅР°С‡РµРЅРёРµ -1 (РЅРµ РёРЅРёС†РёР°Р»РёР·РёСЂРѕРІР°РЅРЅРѕ), 0 РёР»Рё 1
-	INT_REL *valWithErr; // Р›РѕРіРёС‡РµСЃРєРѕРµ Р·РЅР°С‡РµРЅРёРµ -1 (РЅРµ РёРЅРёС†РёР°Р»РёР·РёСЂРѕРІР°РЅРЅРѕ), 0 РёР»Рё 1
+	// Переменные для параллельных рассчетов (массивы размером numthreads)
+	char *proc; // Обработан или не обработан узел (0 - необработан, 1 - обработан)
+	INT_REL *valWithoutErr; // Логическое значение -1 (не инициализированно), 0 или 1
+	INT_REL *valWithErr; // Логическое значение -1 (не инициализированно), 0 или 1
 };
 
 struct element {
@@ -44,9 +44,9 @@ struct element {
 	struct node *inp2;
 	struct node *out;
 
-	// РџРµСЂРµРјРµРЅРЅС‹Рµ РґР»СЏ РїР°СЂР°Р»Р»РµР»СЊРЅС‹С… СЂР°СЃСЃС‡РµС‚РѕРІ (РјР°СЃСЃРёРІС‹ СЂР°Р·РјРµСЂРѕРј numthreads)
-	INT_REL *proc; // Р”Р»СЏ СЂР°СЃСЃС‡РµС‚РѕРІ (0 - РЅРµ РѕР±СЂР°Р±РѕС‚Р°РЅРѕ, 1 - РѕР±СЂР°Р±РѕС‚Р°РЅРѕ)
-	INT_REL *failure; // (0 - РЅР° СЌР»РµРјРµРЅС‚Рµ РЅРµС‚ РѕС€РёР±РєРё, 1 - РЅР° СЌР»РµРјРµРЅС‚Рµ РµСЃС‚СЊ РѕС€РёР±РєР°)
+	// Переменные для параллельных рассчетов (массивы размером numthreads)
+	INT_REL *proc; // Для рассчетов (0 - не обработано, 1 - обработано)
+	INT_REL *failure; // (0 - на элементе нет ошибки, 1 - на элементе есть ошибка)
 };
 
 /****************************************
@@ -59,29 +59,29 @@ int nlNum;
 struct element *el;
 int elNum;
 
-// РњР°СЃСЃРёРІ РґР»СЏ Р±С‹СЃС‚СЂРѕРіРѕ СЂР°СЃРїСЂР°СЃС‚СЂР°РЅРµРЅРёСЏ СЃРёРіРЅР°Р»Р°
+// Массив для быстрого распрастранения сигнала
 struct element **elPA;
 
 int inNum;
 int outNum;
 
-// РњР°СЃСЃРёРІС‹ РґР»СЏ СЂР°Р±РѕС‚С‹ СЃ РІС…РѕРґРЅС‹РјРё СѓР·Р»Р°РјРё РїРѕРґСЃС…РµРјС‹
+// Массивы для работы с входными узлами подсхемы
 char **internal_input_nodes;
 struct node **intInputNodePointers;
 int intInputNodesNum = 0;
 double *interDistribution;
 
-// РњР°СЃСЃРёРІС‹ РґР»СЏ СЂР°Р±РѕС‚С‹ СЃ РІС‹С…РѕРґРЅС‹РјРё СѓР·Р»Р°РјРё РїРѕРґСЃС…РµРјС‹
+// Массивы для работы с выходными узлами подсхемы
 char **internal_output_nodes;
 struct node **intOutputNodePointers;
 int intOutputNodesNum = 0;
 double **outputMatrixError;
 double **outputMatrixTests;
 
-// Р§РёСЃР»Рѕ РїРѕС‚РѕРєРѕРІ РїСЂРѕРіСЂР°РјРјС‹
+// Число потоков программы
 int numthreads;
 
-// Р§РёСЃР»Рѕ РѕРґРЅРѕРІСЂРµРјРµРЅРЅРѕ РѕР±СЂР°Р±Р°С‚С‹РІР°РµРјС‹С… СЃС…РµРј
+// Число одновременно обрабатываемых схем
 int simbits;
 
 #ifdef COUNT_DISTRIBUTION
@@ -92,7 +92,7 @@ int inputDistibution[MAX_NUMBER_OF_ELEMENTS];
 GLOBAL VARIABLES END
 *****************************************/
 
-// РџРѕРёСЃРє СѓР·Р»Р° РІ РѕР±С‰РµРј РїСѓР»Рµ
+// Поиск узла в общем пуле
 struct node *findNode(struct node *n, int nLen, char *str) {
 	int i;
 	for (i = 0; i < nLen; i++) {
@@ -102,7 +102,7 @@ struct node *findNode(struct node *n, int nLen, char *str) {
 	return NULL;
 }
 
-// Р”РѕР±Р°РІРёС‚СЊ СѓР·РµР»
+// Добавить узел
 struct node *addNode(
 	struct node *n, 
 	int *nLen, 
@@ -154,7 +154,7 @@ void clear_state(int id) {
 void fill_levels() {
 	int i, flag, l1;
 
-	/* РЎР±СЂР°СЃС‹РІР°РµРј РІРЅСѓС‚СЂРµРЅРЅРёРµ РїРµСЂРµРјРµРЅРЅС‹Рµ */
+	/* Сбрасываем внутренние переменные */
 	clear_state(0);
 	for (i = 0; i < elNum; i++) {
 		el[i].level = -1;
@@ -163,7 +163,7 @@ void fill_levels() {
 		nl[i].proc[0] = 1;
 	}
 
-	/* РЎС‚Р°РІРёРј РїРµСЂРІС‹Р№ СѓСЂРѕРІРµРЅСЊ */
+	/* Ставим первый уровень */
 	for (i = 0; i < elNum; i++) {
 		if (el[i].type == 1 || el[i].type == 7) {
 			if (el[i].inp1->proc[0] == 1)
@@ -213,7 +213,7 @@ void fill_levels() {
 		}
 	}
 
-	// РџСЂРѕРІРµСЂСЏРµРј С‡С‚Рѕ РІСЃРµ СЌР»РµРјРµРЅС‚С‹ РїСЂРѕРЅСѓРјРµСЂРѕРІР°РЅС‹
+	// Проверяем что все элементы пронумерованы
 	for (i = 0; i < elNum; i++) {
 		if (el[i].level == -1) {
 			fprintf(stderr, "Unreachable part of circuit (%d %s %s %s)!\n", el[i].type, el[i].inp1->name, el[i].inp2->name, el[i].out->name);
@@ -221,7 +221,7 @@ void fill_levels() {
 		}
 	}
 
-	// РџСЂРѕРІРµСЂРєР° РЅР° РѕР±СЂР°С‚РЅС‹Рµ СЃРІСЏР·Рё
+	// Проверка на обратные связи
 	for (i = 0; i < elNum; i++) {
 		if (el[i].type == 1 || el[i].type == 7) {
 			if (el[i].inp1->fanin != NULL) {
@@ -380,7 +380,7 @@ void propagate_distr_estim (struct element **eArr, int eLen, int id) {
 				e->out->valWithoutErr[id] = ~(e->inp1->valWithoutErr[id] ^ e->inp2->valWithoutErr[id]);
 			}
 
-			// Р’РќРРњРђРќРР•! Р­С‚Рѕ РјРµСЃС‚Рѕ РѕС‚Р»РёС‡Р°РµС‚СЃСЏ РѕС‚ СЂР°СЃСЃС‡РµС‚Р° reliability!
+			// ВНИМАНИЕ! Это место отличается от рассчета reliability!
 			e->out->valWithErr[id] = e->failure[id] ^ e->out->valWithErr[id];
 			e->proc[id] = 1;
 			e->out->proc[id] = 1;
@@ -389,7 +389,7 @@ void propagate_distr_estim (struct element **eArr, int eLen, int id) {
 	}
 }
 
-// Р’РѕР·РІСЂР°С‰Р°РµС‚ 1 РµСЃР»Рё С‚РµСЃС‚С‹ СЃРѕРІРїР°Р»Рё Рё 0 РµСЃР»Рё РЅРµ СЃРѕРІРїР°Р»Рё
+// Возвращает 1 если тесты совпали и 0 если не совпали
 int compare_same_by_bit(int id, int bit) {
 	int i;
 	int count = 0;
@@ -412,7 +412,7 @@ int compare_same_by_bit(int id, int bit) {
 void freePreviousData() {
 	int i, j;
 
-	/* Р§РёСЃС‚РёРј РїР°РјСЏС‚СЊ Рё РґР°РЅРЅС‹Рµ РїРѕ СЃС…РµРјР°Рј */
+	/* Чистим память и данные по схемам */
 	for (i = 0; i < nlNum; i++) {
 		free(nl[i].fanout);
 		nl[i].fanout = NULL;
@@ -446,7 +446,7 @@ void create_prop_arrays() {
 	int i, flag;
 	int ind;
 
-	/* РЎР±СЂР°СЃС‹РІР°РµРј РІРЅСѓС‚СЂРµРЅРЅРёРµ РїРµСЂРµРјРµРЅРЅС‹Рµ */
+	/* Сбрасываем внутренние переменные */
 	clear_state(0);
 	for (i = 0; i < inNum; i++) {
 		nl[i].proc[0] = 1;
@@ -454,7 +454,7 @@ void create_prop_arrays() {
 		nl[i].valWithoutErr[0] = (INT_REL)0;
 	}
 
-	/* Р¤РѕСЂРјРёСЂСѓРµРј РјР°СЃСЃРёРІ РґР»СЏ С‚РµСЃС‚РѕРІРѕР№ СЃС…РµРјС‹ */
+	/* Формируем массив для тестовой схемы */
 	flag = 1;
 	ind = 0;
 	while (flag) {
@@ -541,7 +541,7 @@ void create_prop_arrays() {
 void create_data_for_subckt() {
 	int i, j;
 
-	/* РЎРѕР·РґР°РµРј РјР°СЃСЃРёРІ СЃСЃС‹Р»РѕРє РЅР° node СЃРѕРѕС‚РІРµС‚СЃС‚РІСѓСЋС‰РёС… СЃРїРёСЃРєСѓ РІРЅС‚СѓСЂРµРЅРЅРёС… РІС…РѕРґРЅС‹С… СѓР·Р»РѕРІ РґР»СЏ Р±С‹СЃС‚СЂРѕРіРѕ РґРѕСЃС‚СѓРїР° Рє РЅРёРј */
+	/* Создаем массив ссылок на node соответствующих списку внтуренних входных узлов для быстрого доступа к ним */
 	intInputNodePointers = (struct node **)calloc(intInputNodesNum, sizeof(struct node *));
 	for (i = 0; i < intInputNodesNum; i++) {
 		for (j = 0; j < nlNum; j++) {
@@ -560,7 +560,7 @@ void create_data_for_subckt() {
 	for (i = 0; i < (1 << intInputNodesNum); i++)
 		interDistribution[i] = 0.0;
 
-	/* РЎРѕР·РґР°РµРј РјР°СЃСЃРёРІ СЃСЃС‹Р»РѕРє РЅР° node СЃРѕРѕС‚РІРµС‚СЃС‚РІСѓСЋС‰РёС… СЃРїРёСЃРєСѓ РІРЅС‚СѓСЂРµРЅРЅРёС… РІС‹С…РѕРґРЅС‹С… СѓР·Р»РѕРІ РґР»СЏ Р±С‹СЃС‚СЂРѕРіРѕ РґРѕСЃС‚СѓРїР° Рє РЅРёРј */
+	/* Создаем массив ссылок на node соответствующих списку внтуренних выходных узлов для быстрого доступа к ним */
 	intOutputNodePointers = (struct node **)calloc(intOutputNodesNum, sizeof(struct node *));
 	for (i = 0; i < intOutputNodesNum; i++) {
 		for (j = 0; j < nlNum; j++) {
@@ -575,12 +575,12 @@ void create_data_for_subckt() {
 		}
 	}
 
-	/* РњР°СЃСЃРёРІ РІС…РѕРґРЅРѕРіРѕ СЂР°СЃРїСЂРµРґРµР»РµРЅРёСЏ */
+	/* Массив входного распределения */
 	interDistribution = (double *)calloc(1 << intInputNodesNum, sizeof(double));
 	for (i = 0; i < (1 << intInputNodesNum); i++)
 		interDistribution[i] = 0.0;
 
-	/* Р”РІРµ РјР°С‚СЂРёС†С‹ РѕС€РёР±РѕРє РЅР° РІС‹С…РѕРґР°С… */
+	/* Две матрицы ошибок на выходах */
 	outputMatrixError = (double **)calloc(1 << intOutputNodesNum, sizeof(double *)); 
 	outputMatrixTests = (double **)calloc(1 << intOutputNodesNum, sizeof(double *));
 	for (i = 0; i < (1 << intOutputNodesNum); i++) {
@@ -597,7 +597,7 @@ void read_data(FILE *in, FILE *innodes) {
 	el = (struct element *)calloc(MAX_NUMBER_OF_ELEMENTS, sizeof(struct element));
 	elPA = (struct element **)calloc(MAX_NUMBER_OF_ELEMENTS, sizeof(struct element *));
 
-	/* РЎРѕР·РґР°РµРј РїРµСЂРµРјРµРЅРЅС‹Рµ РґР»СЏ РїР°СЂР°Р»Р»РµР»СЊРЅРѕР№ РѕР±СЂР°Р±РѕС‚РєРё */
+	/* Создаем переменные для параллельной обработки */
 	for (i = 0; i < MAX_NUMBER_OF_ELEMENTS; i++) {
 		nl[i].proc = (char *)calloc(numthreads, sizeof(char));
 		nl[i].valWithErr = (INT_REL *)calloc(numthreads, sizeof(INT_REL));
@@ -606,7 +606,7 @@ void read_data(FILE *in, FILE *innodes) {
 		el[i].proc = (INT_REL *)calloc(numthreads, sizeof(INT_REL));
 	}
 
-	/* Р§РёС‚Р°РµРј СЃС…РµРјСѓ РѕСЂРёРіРёРЅР°Р» */
+	/* Читаем схему оригинал */
 	fscanf(in, "%d", &inNum); 
 	for (i = 0; i < inNum; i++) {
 		fscanf(in, "%s", nl[nlNum].name);
@@ -668,7 +668,7 @@ void read_data(FILE *in, FILE *innodes) {
 			}
 			addNodeFanout(el[i].inp2, &(el[i]));
 		}
-		/* Р’С‹С…РѕРґ СЃС…РµРјС‹ */
+		/* Выход схемы */
 		fscanf(in, "%s", buf);
 		el[i].out = findNode(nl, nlNum, buf);
 		if (el[i].out == NULL)	{
@@ -677,7 +677,7 @@ void read_data(FILE *in, FILE *innodes) {
 		addNodeFanin(el[i].out, &(el[i]));
 	}
 	
-	/* Р§РёС‚Р°РµРј РЅР°Р±РѕСЂ РІРЅСѓС‚СЂРµРЅРЅРёС… РІС…РѕРґРЅС‹С… СѓР·Р»РѕРІ */
+	/* Читаем набор внутренних входных узлов */
 	fscanf(innodes, "%d", &intInputNodesNum);
 	if (intInputNodesNum > 16) {
 		fprintf(stderr, "Too large number of internal nodes (%d). Currently we support only 16\n", intInputNodesNum);
@@ -690,7 +690,7 @@ void read_data(FILE *in, FILE *innodes) {
 		strcpy(internal_input_nodes[i], buf);
 	}
 
-	/* Р§РёС‚Р°РµРј РЅР°Р±РѕСЂ РІРЅСѓС‚СЂРµРЅРЅРёС… РІС‹С…РѕРґРЅС‹С… СѓР·Р»РѕРІ */
+	/* Читаем набор внутренних выходных узлов */
 	fscanf(innodes, "%d", &intOutputNodesNum);
 	if (intOutputNodesNum > 12) {
 		fprintf(stderr, "Too large number of internal output nodes (%d). Currently we support only 12\n", intOutputNodesNum);
@@ -709,7 +709,7 @@ void free_data_final() {
 
 	freePreviousData();
  
-	/* Р§РёСЃС‚РёРј РјР°СЃСЃРёРІС‹ СѓР·Р»РѕРІ */
+	/* Чистим массивы узлов */
 	for (i = 0; i < intInputNodesNum; i++) {
 		free(internal_input_nodes[i]);
 	}
@@ -730,7 +730,7 @@ void free_data_final() {
 	free(outputMatrixError);
 	free(outputMatrixTests);
 
-	/* РЈРґР°Р»СЏРµРј РїРµСЂРµРјРµРЅРЅС‹Рµ РґР»СЏ РїР°СЂР°Р»Р»РµР»СЊРЅРѕР№ РѕР±СЂР°Р±РѕС‚РєРё */
+	/* Удаляем переменные для параллельной обработки */
 	for (i = 0; i < MAX_NUMBER_OF_ELEMENTS; i++) {
 		free(nl[i].proc);
 		free(nl[i].valWithErr);
@@ -753,14 +753,14 @@ void throw_errors_on_subckt_outputs(int val, int tid) {
 	for (i = 0; i < intOutputNodesNum; i++) {
 		rand_variable = ZERO;
 		if (val == -1) {
-			// РЎР»СѓС‡Р°Р№ СЂР°РЅРґРѕРјР°
+			// Случай рандома
 			for (k = 0; k < simbits; k += BITS_PER_CALL_GENERATOR) {
 				// dt = rand() % (ONE << BITS_PER_CALL_GENERATOR);
 				dt = uniform_distribution(generator);
 				rand_variable += dt << k;
 			}
 		} else {
-			// РЎР»СѓС‡Р°Р№ РїРѕР»РЅРѕРіРѕ РїРµСЂРµР±РѕСЂР°
+			// Случай полного перебора
 			for (j = 0; j < simbits; j++) {
 				dt = (val >> i) & 1;
 				rand_variable = setbit(rand_variable, j, dt);
@@ -813,7 +813,7 @@ void fill_output_matrix(int tid) {
 		{
 			outputMatrixTests[o1][o2]++;
 		}
-		if (!compare_same_by_bit(tid, k)) { // РџСЂРѕРІРµСЂСЏРµРј РІС‹С…РѕРґС‹ СЃС…РµРј РЅР° РѕРґРёРЅР°РєРѕРІС‹Рµ Р·РЅР°С‡РµРЅРёСЏ
+		if (!compare_same_by_bit(tid, k)) { // Проверяем выходы схем на одинаковые значения
 			#pragma omp critical
 			{
 				outputMatrixError[o1][o2]++;
@@ -874,13 +874,13 @@ int main(int argc, char **argv)
 	}
 #endif
 
-	// РЎС‚Р°РІРёРј С‡РёСЃР»Рѕ РїРѕС‚РѕРєРѕРІ
+	// Ставим число потоков
 	numthreads = omp_get_num_procs() - 1;
 	if (numthreads < 1)
 		numthreads = 1;
 	// numthreads = 1;
 
-	// РЎС‚Р°РІРёРј С‡РёСЃР»Рѕ Р±РёС‚ 
+	// Ставим число бит 
 	simbits = 8 * sizeof(INT_REL);
 	// simbits = 1;
 
@@ -908,17 +908,17 @@ int main(int argc, char **argv)
 	timeStart = clock();
 	nlNum = 0;
 		
-	/* Р§РёС‚Р°РµРј РґР°РЅРЅС‹Рµ РёР· С„Р°Р№Р»РѕРІ */
+	/* Читаем данные из файлов */
 	read_data(in, innodes);
 
-	// РЎР»СѓС‡Р°Р№ РµСЃР»Рё С‡РёСЃР»Рѕ С‚РµСЃС‚РѕРІ Р±РѕР»СЊС€Рµ РїРѕР»РЅРѕРіРѕ РїРµСЂРµР±РѕСЂР°
+	// Случай если число тестов больше полного перебора
 	if (mciter != -1 && inNum < 32) {
 		if (mciter > (1 << inNum)) {
 			mciter = -1;
 		}
 	}
 
-	// Р•СЃР»Рё С‡РёСЃР»Рѕ РЅСѓР¶РЅС‹С… С‚РµСЃС‚РѕРІ РјРµРЅСЊС€Рµ С‡РµРј С‡РёСЃР»Рѕ Р±РёС‚ РїРѕРґ РјРѕРґРµР»РёСЂРѕРІР°РЅРёРµ (РІРѕР·РјРѕР¶РЅРѕ РґР»СЏ РјР°Р»РµРЅСЊРєРёС… СЃС…РµРј)
+	// Если число нужных тестов меньше чем число бит под моделирование (возможно для маленьких схем)
 	if (mciter == -1 && inNum < 32) {
 		if ((1 << inNum) < simbits) {
 			simbits = (1 << inNum);
@@ -938,14 +938,14 @@ int main(int argc, char **argv)
 		monte_carlo_iter = (mciter / simbits) + 1;
 	}
 
-	/* Р¤РѕСЂРјРёСЂСѓРµРј СЃР»СѓР¶РµР±РЅС‹Рµ РјР°СЃСЃРёРІС‹ РґР»СЏ РїРѕРґСЃС…РµРјС‹ */
+	/* Формируем служебные массивы для подсхемы */
 	create_data_for_subckt();
-	/* Р—Р°РїРѕР»РЅСЏРµРј СѓСЂРѕРІРЅРё */
+	/* Заполняем уровни */
 	fill_levels();
-	/* Р”РµР»Р°РµРј РјР°СЃСЃРёРІС‹ РґР»СЏ Р±С‹СЃС‚СЂРѕРіРѕ РѕР±С…РѕРґР° СЃС…РµРјС‹ */
+	/* Делаем массивы для быстрого обхода схемы */
 	create_prop_arrays();
 	
-	/* РћСЃРЅРѕРІРЅРѕР№ С†РёРєР» РњРѕРЅС‚Рµ-РљР°СЂР»Рѕ */
+	/* Основной цикл Монте-Карло */
 	#pragma omp parallel for firstprivate(i, j, o1, o2) num_threads(numthreads)
 	for (mc = 0; mc < monte_carlo_iter * (1 << intOutputNodesNum); mc++) {
 		int tid = omp_get_thread_num();
@@ -954,18 +954,18 @@ int main(int argc, char **argv)
 		if (full_search == 0)
 			ii2 = -1;
 
-		clear_state(tid); // РЎР±СЂР°СЃС‹РІР°РµРј РІСЃРµ РґР°РЅРЅС‹Рµ РїРѕ СЂР°СЃСЃС‡РµС‚Р°Рј
-		throw_errors_on_subckt_outputs(ii2, tid); // РљРёРґР°РµРј РѕС€РёР±РєРё РЅР° РІС‹С…РѕРґС‹ РїРѕРґСЃС…РµРјС‹
+		clear_state(tid); // Сбрасываем все данные по рассчетам
+		throw_errors_on_subckt_outputs(ii2, tid); // Кидаем ошибки на выходы подсхемы
 		
 		if (full_search == 0) {
-			dice(tid); // РљРёРґР°РµРј РєСѓР±РёРєРё СЃРѕ Р·РЅР°С‡РµРЅРёСЏРјРё РЅР° РІС…РѕРґС‹ СЃС…РµРј
+			dice(tid); // Кидаем кубики со значениями на входы схем
 		} else {
-			set_input_vector(ii1, tid); // РЈСЃС‚Р°РЅР°РІР»РёРІР°РµРј РєРѕРЅРєСЂРµС‚РЅРѕРµ Р·РЅР°С‡РµРЅРёРµ РЅР° РІС…РѕРґС‹ СЃС…РµРјС‹
+			set_input_vector(ii1, tid); // Устанавливаем конкретное значение на входы схемы
 		}
-		propagate_distr_estim(elPA, elNum, tid); // Р Р°СЃРїСЂРѕСЃС‚СЂР°РЅСЏРµРј Р»РѕРіРёРєСѓ РѕС‚ РІС…РѕРґРѕРІ Рє РІС‹С…РѕРґР°Рј С‚РµСЃС‚РѕРІРѕР№ СЃС…РµРјС‹
+		propagate_distr_estim(elPA, elNum, tid); // Распространяем логику от входов к выходам тестовой схемы
 		
-		calc_input_ckt_distribution(tid); // РЎС‡РёС‚Р°РµРј СЂР°СЃРїСЂРµРґРµР»РµРЅРёРµ РЅР° РІС…РѕРґР°С… РїРѕРґСЃС…РµРјС‹
-		fill_output_matrix(tid); // Р—Р°РїРѕР»РЅСЏРµРј РјР°С‚СЂРёС†Сѓ РѕС€РёР±РѕРє РЅР° РІС‹С…РѕРґР°С… РїРѕРґСЃС…РµРјС‹
+		calc_input_ckt_distribution(tid); // Считаем распределение на входах подсхемы
+		fill_output_matrix(tid); // Заполняем матрицу ошибок на выходах подсхемы
 		// print_vectors_for_check(out1, tid);
 
 		#pragma omp critical
@@ -974,14 +974,14 @@ int main(int argc, char **argv)
 		}
 	}
 
-	// РќРѕСЂРјРёСЂСѓРµРј СЂР°СЃРїСЂРµРґРµР»РµРЅРёРµ РЅР° РІС…РѕРґР°С… РїРѕРґСЃС…РµРјС‹ Рё РІС‹РІРѕРґРёРј РІ С„Р°Р№Р»
+	// Нормируем распределение на входах подсхемы и выводим в файл
 	for (i = 0; i < (1 << intInputNodesNum); i++) {
 		interDistribution[i] = interDistribution[i]/(monte_carlo_iter * (1 << intOutputNodesNum) * simbits);
 		fprintf(outfile, "%.18lf ", interDistribution[i]);
 	}
 	fprintf(outfile, "\n");
 
-	// Р’С‹РІРѕРґРёРј РјР°С‚СЂРёС†Сѓ СЂР°СЃРїСЂРµРґРµР»РµРЅРёРµ РЅР° РІС‹С…РѕРґР°С… РїРѕРґСЃС…РµРјС‹
+	// Выводим матрицу распределение на выходах подсхемы
 	for (i = 0; i < (1 << intOutputNodesNum); i++) {
 		for (j = 0; j < (1 << intOutputNodesNum); j++) {
 			if (outputMatrixTests[i][j] == 0) {
@@ -1013,4 +1013,4 @@ int main(int argc, char **argv)
 	fclose(innodes);
 	fclose(outfile);
 	return 0; 
-}
+} 	
