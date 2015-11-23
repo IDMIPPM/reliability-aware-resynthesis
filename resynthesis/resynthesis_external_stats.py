@@ -7,7 +7,7 @@ import os
 import sys
 
 def get_project_directory():
-    project_directory = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    project_directory = os.path.dirname(os.path.dirname(__file__))
     return project_directory
 
 # Call external program (very fast) to calculate vulnerability map for circuit

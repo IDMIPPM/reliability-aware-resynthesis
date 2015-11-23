@@ -691,4 +691,4 @@ def improve_circuit_by_resynthesis_ver6(in_circ_file, out_circ_file, needed_repl
     print("Levels in circ. Initial: {}, Resyntesized: {}, Percent: {}".format(initial_circ_delay, resynt_circ_delay, circ_delay_percent))
 
 if __name__ == '__main__':
-    improve_circuit_by_resynthesis_ver6('../circuits/ISCAS/c432_initial.txt', '../temp/c432_resynth.txt', 1000, 1.5)
+    improve_circuit_by_resynthesis_ver6('./circuits/ISCAS/c432_initial.txt', './temp/c432_resynth.txt', 1000, 1.5)
